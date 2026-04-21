@@ -290,3 +290,33 @@ llm -f my-fragments:argument
 If multiple fragments are returned they will be used as if the user passed multiple `-f X` arguments to the command.
 
 Multiple fragments are particularly useful for things like plugins that return every file in a directory. If these were concatenated together by the plugin, a change to a single file would invalidate the de-duplicatino cache for that whole fragment. Giving each file its own fragment means we can avoid storing multiple copies of that full collection if only a single file has changed.
+
+(plugin-hooks-after-log-to-db)=
+## after_log_to_db(response, db)
+
+This hook fires after `Response.log_to_db` has persisted a response to the
+logs database. Plugins use it to record auxiliary metadata keyed on the
+now-logged response — for example indexes, audit trails, or cross-response
+hashes.
+
+Gating on `log_to_db` itself means plugins inherit `llm`'s existing log
+policy (`logs_on()`, `--log` / `--no-log`) for free: the hook fires if and
+only if `llm` decided to log the response.
+
+The `response` argument is the `Response` (or `AsyncResponse`) that was just
+persisted, and `db` is the `sqlite_utils.Database` it was written to. The
+row is already present at hook time, so plugins can read it back.
+
+Example:
+
+```python
+import llm
+import sqlite_utils
+
+@llm.hookimpl
+def after_log_to_db(response: llm.Response, db: sqlite_utils.Database):
+    db["audit"].insert({
+        "response_id": response.id,
+        "model": response.model.model_id,
+    })
+```
