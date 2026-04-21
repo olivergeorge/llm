@@ -217,6 +217,34 @@ def get_tools() -> Dict[str, Union[Tool, Type[Toolbox]]]:
     return tools
 
 
+def _get_replay_stores() -> List[Any]:
+    """Return replay stores registered via the register_replay_stores hook.
+
+    Stores are returned in pluggy's dispatch order. Callers should iterate and
+    take the first non-None ``lookup`` result as the winning replay hit.
+    """
+    load_plugins()
+    stores: List[Any] = []
+
+    def register(store):
+        stores.append(store)
+
+    pm.hook.register_replay_stores(register=register)
+    return stores
+
+
+def _notify_after_log_to_db(response: Any, db: Any) -> None:
+    """Notify plugins that a response has been persisted via log_to_db.
+
+    Fires after all core persistence writes have completed so plugins can
+    record auxiliary metadata keyed on the now-logged response without
+    duplicating llm's log-gating logic (``logs_on()`` + ``--log`` /
+    ``--no-log``): the hook fires if and only if llm decided to log.
+    """
+    load_plugins()
+    pm.hook.after_log_to_db(response=response, db=db)
+
+
 def get_embedding_models_with_aliases() -> List["EmbeddingModelWithAliases"]:
     model_aliases = []
 

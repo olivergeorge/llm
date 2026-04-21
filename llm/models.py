@@ -686,6 +686,9 @@ class _BaseResponse:
         self.output_tokens: Optional[int] = None
         self.token_details: Optional[dict] = None
         self.done_callbacks: List[Callable] = []
+        self.replayed: bool = False
+        self.replay_source_id: Optional[str] = None
+        self._replayed_tool_results: Optional[List[ToolResult]] = None
 
         if self.prompt.schema and not self.model.supports_schema:
             raise ValueError(f"{self.model} does not support schemas")
@@ -1016,6 +1019,10 @@ class _BaseResponse:
                     },
                 )
 
+        from llm import _notify_after_log_to_db
+
+        _notify_after_log_to_db(self, db)
+
 
 class Response(_BaseResponse):
     "Sync response from a model."
@@ -1055,6 +1062,9 @@ class Response(_BaseResponse):
         before_call: Optional[BeforeCallSync] = None,
         after_call: Optional[AfterCallSync] = None,
     ) -> List[ToolResult]:
+        if self._replayed_tool_results is not None:
+            return self._replayed_tool_results
+
         tool_results = []
         tools_by_name = {tool.name: tool for tool in self.prompt.tools}
 
@@ -1180,6 +1190,33 @@ class Response(_BaseResponse):
     def __iter__(self) -> Iterator[str]:
         self._start = time.monotonic()
         self._start_utcnow = datetime.datetime.now(datetime.timezone.utc)
+
+        if not self._done:
+            from llm import _get_replay_stores
+
+            for store in _get_replay_stores():
+                replayed = store.lookup(self)
+                if replayed is not None:
+                    self._chunks = list(replayed.chunks)
+                    self.response_json = getattr(replayed, "response_json", None)
+                    self.replayed = True
+                    self.replay_source_id = getattr(replayed, "source_id", None)
+                    replayed_tool_calls = getattr(replayed, "tool_calls", None)
+                    if replayed_tool_calls is not None:
+                        self._tool_calls = list(replayed_tool_calls)
+                    self._replayed_tool_results = getattr(
+                        replayed, "tool_results", None
+                    )
+                    replayed_resolved_model = getattr(replayed, "resolved_model", None)
+                    if replayed_resolved_model is not None:
+                        self.resolved_model = replayed_resolved_model
+                    if self.conversation:
+                        self.conversation.responses.append(self)
+                    self._end = time.monotonic()
+                    self._done = True
+                    self._on_done()
+                    break
+
         if self._done:
             yield from self._chunks
             return
@@ -1259,6 +1296,9 @@ class AsyncResponse(_BaseResponse):
         before_call: Optional[BeforeCallAsync] = None,
         after_call: Optional[AfterCallAsync] = None,
     ) -> List[ToolResult]:
+        if self._replayed_tool_results is not None:
+            return self._replayed_tool_results
+
         tool_calls_list = await self.tool_calls()
         tools_by_name = {tool.name: tool for tool in self.prompt.tools}
 
@@ -1417,6 +1457,38 @@ class AsyncResponse(_BaseResponse):
         return self
 
     async def __anext__(self) -> str:
+        if not self._done and not getattr(self, "_replay_checked", False):
+            self._replay_checked = True
+            from llm import _get_replay_stores
+
+            for store in _get_replay_stores():
+                alookup = getattr(store, "alookup", None)
+                if alookup is not None:
+                    replayed = await alookup(self)
+                else:
+                    replayed = store.lookup(self)
+                if replayed is not None:
+                    self._chunks = list(replayed.chunks)
+                    self.response_json = getattr(replayed, "response_json", None)
+                    self.replayed = True
+                    self.replay_source_id = getattr(replayed, "source_id", None)
+                    replayed_tool_calls = getattr(replayed, "tool_calls", None)
+                    if replayed_tool_calls is not None:
+                        self._tool_calls = list(replayed_tool_calls)
+                    self._replayed_tool_results = getattr(
+                        replayed, "tool_results", None
+                    )
+                    replayed_resolved_model = getattr(replayed, "resolved_model", None)
+                    if replayed_resolved_model is not None:
+                        self.resolved_model = replayed_resolved_model
+                    if self.conversation:
+                        self.conversation.responses.append(self)
+                    self._end = time.monotonic()
+                    self._done = True
+                    self._iter_chunks = list(self._chunks)
+                    await self._on_done()
+                    break
+
         if self._done:
             if hasattr(self, "_iter_chunks") and self._iter_chunks:
                 return self._iter_chunks.pop(0)
