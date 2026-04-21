@@ -1016,6 +1016,10 @@ class _BaseResponse:
                     },
                 )
 
+        from llm import _notify_after_log_to_db
+
+        _notify_after_log_to_db(self, db)
+
 
 class Response(_BaseResponse):
     "Sync response from a model."

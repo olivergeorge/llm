@@ -217,6 +217,18 @@ def get_tools() -> Dict[str, Union[Tool, Type[Toolbox]]]:
     return tools
 
 
+def _notify_after_log_to_db(response: Any, db: Any) -> None:
+    """Notify plugins that a response has been persisted via log_to_db.
+
+    Fires after all core persistence writes have completed so plugins can
+    record auxiliary metadata keyed on the now-logged response without
+    duplicating llm's log-gating logic (``logs_on()`` + ``--log`` /
+    ``--no-log``): the hook fires if and only if llm decided to log.
+    """
+    load_plugins()
+    pm.hook.after_log_to_db(response=response, db=db)
+
+
 def get_embedding_models_with_aliases() -> List["EmbeddingModelWithAliases"]:
     model_aliases = []
 
