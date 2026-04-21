@@ -217,6 +217,22 @@ def get_tools() -> Dict[str, Union[Tool, Type[Toolbox]]]:
     return tools
 
 
+def _get_replay_stores() -> List[Any]:
+    """Return replay stores registered via the register_replay_stores hook.
+
+    Stores are returned in pluggy's dispatch order. Callers should iterate and
+    take the first non-None ``lookup`` result as the winning replay hit.
+    """
+    load_plugins()
+    stores: List[Any] = []
+
+    def register(store):
+        stores.append(store)
+
+    pm.hook.register_replay_stores(register=register)
+    return stores
+
+
 def _notify_after_log_to_db(response: Any, db: Any) -> None:
     """Notify plugins that a response has been persisted via log_to_db.
 

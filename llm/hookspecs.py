@@ -36,5 +36,10 @@ def register_tools(register):
 
 
 @hookspec
+def register_replay_stores(register):
+    "Register ReplayStore instances used for response replay"
+
+
+@hookspec
 def after_log_to_db(response, db):
     "Called after Response.log_to_db has persisted a response row"
