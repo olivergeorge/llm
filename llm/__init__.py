@@ -9,6 +9,7 @@ from .models import (
     AsyncModel,
     AsyncResponse,
     Attachment,
+    CancelPrompt,
     CancelToolCall,
     Conversation,
     EmbeddingModel,
@@ -44,6 +45,7 @@ __all__ = [
     "AsyncModel",
     "AsyncResponse",
     "Attachment",
+    "CancelPrompt",
     "CancelToolCall",
     "Collection",
     "Conversation",
@@ -215,6 +217,24 @@ def get_tools() -> Dict[str, Union[Tool, Type[Toolbox]]]:
             impl.function(register=register)
 
     return tools
+
+
+def _get_prompt_gates() -> List[Any]:
+    """Return prompt gates registered via the register_prompt_gates hook.
+
+    Gates are returned in pluggy's dispatch order. Each registered gate's
+    ``check(prompt, model)`` is invoked before ``model.execute`` runs; a
+    gate raising :class:`CancelPrompt` aborts the prompt without touching
+    the upstream API.
+    """
+    load_plugins()
+    gates: List[Any] = []
+
+    def register(gate):
+        gates.append(gate)
+
+    pm.hook.register_prompt_gates(register=register)
+    return gates
 
 
 def get_embedding_models_with_aliases() -> List["EmbeddingModelWithAliases"]:

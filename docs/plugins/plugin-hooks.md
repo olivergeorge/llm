@@ -290,3 +290,67 @@ llm -f my-fragments:argument
 If multiple fragments are returned they will be used as if the user passed multiple `-f X` arguments to the command.
 
 Multiple fragments are particularly useful for things like plugins that return every file in a directory. If these were concatenated together by the plugin, a change to a single file would invalidate the de-duplicatino cache for that whole fragment. Giving each file its own fragment means we can avoid storing multiple copies of that full collection if only a single file has changed.
+
+(plugin-hooks-register-prompt-gates)=
+## register_prompt_gates(register)
+
+This hook registers one or more **prompt gates** — objects that can veto a
+prompt before `model.execute` is called. It is the integration point used by
+plugins such as `llm-confirm-tokens` to interpose a "you are about to send N
+tokens, proceed?" confirmation on top of the normal prompt flow without
+wrapping the `llm` CLI itself.
+
+Enablement is the gate's concern. Core calls every registered gate's
+`check` once, in pluggy dispatch order, immediately before the first chunk
+is requested from the model. A gate that is "off" (e.g. stdin isn't a TTY,
+the token count is under a threshold, the user passed `--yes`) simply
+returns `None` and the live execute path runs unchanged.
+
+A gate is a duck-typed object with a small protocol:
+
+```python
+class PromptGate:
+    def check(self, prompt, model):
+        """Return None to allow the prompt, or raise llm.CancelPrompt to abort."""
+```
+
+For async responses, a gate may also expose `acheck(prompt, model)` (awaited
+by `AsyncResponse`). If `acheck` is not defined the sync `check` is used.
+
+Arguments:
+
+- `prompt` is the fully-resolved `llm.Prompt` that is about to be sent —
+  fragments, attachments, system prompt, tools and options are all already
+  populated, so a gate that wants to count tokens or audit the final
+  message list can read them directly.
+- `model` is the `llm.Model` or `llm.AsyncModel` that will execute the
+  prompt.
+
+To cancel the prompt, raise `llm.CancelPrompt("reason")`. The exception
+propagates to the caller; no chunks are yielded, the conversation is not
+updated, and `model.execute` is not invoked. Because cancellation is a
+raised exception rather than a return value, the first raising gate
+short-circuits any subsequent gates.
+
+Here is a minimal stub plugin useful for tests:
+
+```python
+import llm
+
+class BlockPrompts:
+    def check(self, prompt, model):
+        raise llm.CancelPrompt("prompts are disabled in this environment")
+
+@llm.hookimpl
+def register_prompt_gates(register):
+    register(BlockPrompts())
+```
+
+With this plugin installed, `model.prompt("anything").text()` raises
+`llm.CancelPrompt` before touching the upstream API. A production plugin
+would gate the `raise` on its own state — a threshold, a CLI flag, a TTY
+check — so the gate only engages when the user has opted in.
+
+The hookspec is **provisional** for at least one release cycle. Third-party
+gates can experiment against it, but the signature may change while we
+live with the contract.

@@ -336,6 +336,12 @@ class CancelToolCall(Exception):
     pass
 
 
+class CancelPrompt(Exception):
+    "Raised by a prompt gate to cancel a prompt before the model is called."
+
+    pass
+
+
 @dataclass
 class Prompt:
     "The prompt being sent to the model."
@@ -1184,6 +1190,11 @@ class Response(_BaseResponse):
             yield from self._chunks
             return
 
+        from llm import _get_prompt_gates
+
+        for gate in _get_prompt_gates():
+            gate.check(prompt=self.prompt, model=self.model)
+
         if isinstance(self.model, Model):
             for chunk in self.model.execute(
                 self.prompt,
@@ -1421,6 +1432,17 @@ class AsyncResponse(_BaseResponse):
             if hasattr(self, "_iter_chunks") and self._iter_chunks:
                 return self._iter_chunks.pop(0)
             raise StopAsyncIteration
+
+        if not getattr(self, "_gates_checked", False):
+            self._gates_checked = True
+            from llm import _get_prompt_gates
+
+            for gate in _get_prompt_gates():
+                acheck = getattr(gate, "acheck", None)
+                if acheck is not None:
+                    await acheck(prompt=self.prompt, model=self.model)
+                else:
+                    gate.check(prompt=self.prompt, model=self.model)
 
         if not hasattr(self, "_generator"):
             if isinstance(self.model, AsyncModel):

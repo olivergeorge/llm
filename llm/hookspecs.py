@@ -33,3 +33,8 @@ def register_fragment_loaders(register):
 @hookspec
 def register_tools(register):
     "Register functions that can be used as tools by the LLMs"
+
+
+@hookspec
+def register_prompt_gates(register):
+    "Register PromptGate instances consulted before a prompt is sent to the model"
