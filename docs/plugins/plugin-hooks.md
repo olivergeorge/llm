@@ -290,3 +290,96 @@ llm -f my-fragments:argument
 If multiple fragments are returned they will be used as if the user passed multiple `-f X` arguments to the command.
 
 Multiple fragments are particularly useful for things like plugins that return every file in a directory. If these were concatenated together by the plugin, a change to a single file would invalidate the de-duplicatino cache for that whole fragment. Giving each file its own fragment means we can avoid storing multiple copies of that full collection if only a single file has changed.
+
+(plugin-hooks-register-replay-stores)=
+## register_replay_stores(register)
+
+This hook registers one or more **replay stores** — objects that can serve a
+previously-recorded model response instead of running a live API call. It is
+the integration point used by plugins such as `llm-replay` to offer opt-in
+record-and-replay for LLM responses in the VCR.py tradition.
+
+Enablement is a plugin concern. `llm` core calls every registered store's
+`lookup` once per response iteration; the store decides whether to engage
+based on its own state — a CLI flag the plugin registered (e.g. `--replay`),
+an environment variable, a module-level toggle set by test fixtures, and so
+on. A store that is "off" simply returns `None` from `lookup`, and the live
+execute path runs unchanged. `llm-replay` is the canonical example: its
+CLI hookimpl flips a module-global when `--replay` is passed, and its
+`lookup()` consults that flag before computing a key.
+
+A replay store is a duck-typed object with a small protocol. The synchronous
+shape is:
+
+```python
+class ReplayStore:
+    def lookup(self, response):
+        """Return a ReplayedResponse (hit) or None (miss)."""
+
+    def store(self, response):
+        """Optionally called by the plugin after a miss to record the live response."""
+```
+
+For async responses, the store may also expose `alookup(response)` (awaited by
+`AsyncResponse`). If `alookup` is not defined the sync `lookup` is used. A
+`ReplayedResponse` is any object with these attributes:
+
+- `chunks: list[str]` — the recorded text chunks to yield
+- `response_json: Optional[dict]` — the raw JSON body, if any
+- `source_id: Optional[str]` — an identifier the plugin can use to point back
+  at the source `responses` row for audit
+- `tool_calls: Optional[list[llm.ToolCall]]` — tool calls the model emitted on
+  the recorded run. Populated onto `response._tool_calls` so the chain can
+  continue without re-querying the model.
+- `tool_results: Optional[list[llm.ToolResult]]` — recorded outputs of the
+  tools that fired during the initial recording. When provided,
+  `execute_tool_calls()` returns this list verbatim instead of invoking live
+  tool implementations, so destructive tools only fire once per recording.
+- `resolved_model: Optional[str]` — the provider-resolved model id from the
+  recorded run. Written onto `response.resolved_model` so replays don't
+  degrade the audit trail.
+
+The `response` argument to `lookup` is the active `llm.Response` (or
+`llm.AsyncResponse`); the plugin reads `response.prompt`, `response.model`,
+and `response.conversation` to compute its own replay key. Any additional
+plugin-specific inputs (e.g. whether URL attachments should be fetched and
+content-hashed) live in plugin state, not on the response object. This keeps
+the request-representation dataclass private to the plugin, so changes to how
+a plugin canonicalizes a request do not force a change to `llm` core.
+
+When multiple stores are registered, they are consulted in dispatch order and
+the first non-`None` `lookup` result wins. On a hit, `_BaseResponse` populates
+the chunks, marks the response done, records `response.replayed = True` and
+`response.replay_source_id`, and skips `model.execute(...)` entirely.
+
+Here is a minimal stub plugin useful for tests:
+
+```python
+import llm
+
+class StubStore:
+    def __init__(self, replayed=None):
+        self.replayed = replayed
+
+    def lookup(self, response):
+        return self.replayed
+
+class ReplayedResponse:
+    def __init__(self, chunks, response_json=None, source_id=None):
+        self.chunks = chunks
+        self.response_json = response_json
+        self.source_id = source_id
+
+@llm.hookimpl
+def register_replay_stores(register):
+    register(StubStore(replayed=ReplayedResponse(["hello from cache"])))
+```
+
+With this plugin installed, `model.prompt("anything").text()` returns
+`"hello from cache"` without touching the upstream API. A production plugin
+would gate that return value on a flag it owns so the store only engages
+when the user has opted in.
+
+The hookspec is **provisional** for at least one release cycle. Third-party
+stores can experiment against it, but the signature may change while we live
+with the contract.
