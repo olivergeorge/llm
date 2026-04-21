@@ -41,5 +41,10 @@ def register_replay_stores(register):
 
 
 @hookspec
+def register_prompt_gates(register):
+    "Register PromptGate instances consulted before a prompt is sent to the model"
+
+
+@hookspec
 def after_log_to_db(response, db):
     "Called after Response.log_to_db has persisted a response row"
