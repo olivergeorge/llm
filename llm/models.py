@@ -1238,7 +1238,16 @@ class Response(_BaseResponse):
         from llm import _get_prompt_gates
 
         for gate in _get_prompt_gates():
-            gate.check(prompt=self.prompt, model=self.model)
+            try:
+                gate.check(
+                    prompt=self.prompt,
+                    model=self.model,
+                    conversation=self.conversation,
+                )
+            except TypeError:
+                # Back-compat for gates pinned to the original
+                # (prompt, model) signature; they just won't see history.
+                gate.check(prompt=self.prompt, model=self.model)
 
         if isinstance(self.model, Model):
             for chunk in self.model.execute(
@@ -1504,9 +1513,23 @@ class AsyncResponse(_BaseResponse):
             for gate in _get_prompt_gates():
                 acheck = getattr(gate, "acheck", None)
                 if acheck is not None:
-                    await acheck(prompt=self.prompt, model=self.model)
+                    try:
+                        await acheck(
+                            prompt=self.prompt,
+                            model=self.model,
+                            conversation=self.conversation,
+                        )
+                    except TypeError:
+                        await acheck(prompt=self.prompt, model=self.model)
                 else:
-                    gate.check(prompt=self.prompt, model=self.model)
+                    try:
+                        gate.check(
+                            prompt=self.prompt,
+                            model=self.model,
+                            conversation=self.conversation,
+                        )
+                    except TypeError:
+                        gate.check(prompt=self.prompt, model=self.model)
 
         if not hasattr(self, "_generator"):
             if isinstance(self.model, AsyncModel):

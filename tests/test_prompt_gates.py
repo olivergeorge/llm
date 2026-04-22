@@ -1,10 +1,10 @@
 """Tests for the ``register_prompt_gates`` hookspec.
 
-A prompt gate is a duck-typed object with a ``check(prompt, model)``
-method (and optionally ``acheck`` for async responses). Gates are
-consulted before ``model.execute`` runs; a gate raising
-:class:`llm.CancelPrompt` aborts the prompt before any upstream API
-call, which is what plugins such as ``llm-confirm-tokens`` use to
+A prompt gate is a duck-typed object with a ``check(prompt, model,
+conversation=None)`` method (and optionally ``acheck`` for async
+responses). Gates are consulted before ``model.execute`` runs; a gate
+raising :class:`llm.CancelPrompt` aborts the prompt before any upstream
+API call, which is what plugins such as ``llm-confirm-tokens`` use to
 interpose a "proceed?" prompt keyed on token count.
 """
 
@@ -16,8 +16,9 @@ import pytest
 class StubGate:
     """Minimal PromptGate used to verify the register_prompt_gates hookspec.
 
-    Records the (prompt, model) tuples it has seen and optionally raises
-    :class:`CancelPrompt` to exercise the cancellation path.
+    Records the (prompt, model, conversation) tuples it has seen and
+    optionally raises :class:`CancelPrompt` to exercise the cancellation
+    path.
     """
 
     def __init__(self, *, cancel=False, reason="stub cancel"):
@@ -26,19 +27,34 @@ class StubGate:
         self.check_calls = []
         self.acheck_calls = []
 
-    def check(self, prompt, model):
-        self.check_calls.append((prompt, model))
+    def check(self, prompt, model, conversation=None):
+        self.check_calls.append((prompt, model, conversation))
         if self.cancel:
             raise CancelPrompt(self.reason)
 
-    async def acheck(self, prompt, model):
-        self.acheck_calls.append((prompt, model))
+    async def acheck(self, prompt, model, conversation=None):
+        self.acheck_calls.append((prompt, model, conversation))
         if self.cancel:
             raise CancelPrompt(self.reason)
 
 
 class SyncOnlyGate:
     """Gate without acheck — async path must fall back to sync check()."""
+
+    def __init__(self):
+        self.check_calls = []
+
+    def check(self, prompt, model, conversation=None):
+        self.check_calls.append((prompt, model, conversation))
+
+
+class LegacyGate:
+    """Gate pinned to the original ``(prompt, model)`` signature.
+
+    Used to verify core's TypeError fallback — old gates that don't
+    accept the new ``conversation`` kwarg must still be invoked in the
+    two-arg shape.
+    """
 
     def __init__(self):
         self.check_calls = []
@@ -69,9 +85,43 @@ def test_gate_check_runs_on_live_path(mock_model):
         response = mock_model.prompt("hi")
         assert response.text() == "hello"
         assert len(gate.check_calls) == 1
-        prompt, model = gate.check_calls[0]
+        prompt, model, conversation = gate.check_calls[0]
         assert prompt is response.prompt
         assert model is mock_model
+        # One-shot prompt — no conversation attached.
+        assert conversation is None
+    finally:
+        pm.unregister(name="PromptGatePlugin")
+
+
+def test_gate_receives_conversation_on_continue(mock_model):
+    """When the prompt runs inside a Conversation, the gate sees it."""
+    gate = StubGate()
+    try:
+        _register_gate(gate)
+        conversation = mock_model.conversation()
+        mock_model.enqueue(["first"])
+        conversation.prompt("hello").text()
+        mock_model.enqueue(["second"])
+        response = conversation.prompt("again")
+        assert response.text() == "second"
+        # Two checks (one per turn), each with the same conversation.
+        assert len(gate.check_calls) == 2
+        assert gate.check_calls[0][2] is conversation
+        assert gate.check_calls[1][2] is conversation
+    finally:
+        pm.unregister(name="PromptGatePlugin")
+
+
+def test_legacy_gate_still_invoked_with_two_args(mock_model):
+    """Gates pinned to ``(prompt, model)`` are invoked in the old shape."""
+    gate = LegacyGate()
+    try:
+        _register_gate(gate)
+        mock_model.enqueue(["ok"])
+        response = mock_model.prompt("hi")
+        assert response.text() == "ok"
+        assert len(gate.check_calls) == 1
     finally:
         pm.unregister(name="PromptGatePlugin")
 
