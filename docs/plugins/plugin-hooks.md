@@ -310,12 +310,13 @@ A gate is a duck-typed object with a small protocol:
 
 ```python
 class PromptGate:
-    def check(self, prompt, model):
+    def check(self, prompt, model, conversation=None):
         """Return None to allow the prompt, or raise llm.CancelPrompt to abort."""
 ```
 
-For async responses, a gate may also expose `acheck(prompt, model)` (awaited
-by `AsyncResponse`). If `acheck` is not defined the sync `check` is used.
+For async responses, a gate may also expose `acheck(prompt, model,
+conversation=None)` (awaited by `AsyncResponse`). If `acheck` is not defined
+the sync `check` is used.
 
 Arguments:
 
@@ -325,6 +326,16 @@ Arguments:
   message list can read them directly.
 - `model` is the `llm.Model` or `llm.AsyncModel` that will execute the
   prompt.
+- `conversation` is the `llm.Conversation` the prompt belongs to, or `None`
+  for one-shot prompts. When `llm -c`/`--cid` continues a prior session,
+  `conversation.responses` holds the earlier turns that the model will
+  re-send alongside the new prompt — gates that care about what the
+  provider actually bills (token counters, size caps) should walk it.
+
+Core calls `check` with `conversation` as a keyword argument. Gates that
+omit it from their signature are invoked in the legacy `(prompt, model)`
+shape instead, so pre-existing gates keep working — they just won't see
+history.
 
 To cancel the prompt, raise `llm.CancelPrompt("reason")`. The exception
 propagates to the caller; no chunks are yielded, the conversation is not
