@@ -23,7 +23,7 @@ import httpx
 import openai
 import os
 
-from pydantic import field_validator, Field
+from pydantic import create_model, field_validator, Field
 
 from typing import AsyncGenerator, cast, List, Iterable, Iterator, Optional, Union
 import json
@@ -181,6 +181,7 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -188,6 +189,7 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -202,6 +204,7 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -209,6 +212,7 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -220,6 +224,7 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -227,6 +232,7 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -247,6 +253,8 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
+                image_detail_original=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -254,6 +262,33 @@ def register_models(register):
                 model_id,
                 vision=True,
                 reasoning=True,
+                verbosity=True,
+                image_detail_original=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+        )
+    # GPT-5.5
+    for model_id in (
+        "gpt-5.5",
+        "gpt-5.5-2026-04-23",
+    ):
+        register(
+            Chat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                verbosity=True,
+                image_detail_original=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+            AsyncChat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                verbosity=True,
+                image_detail_original=True,
                 supports_schema=True,
                 supports_tools=True,
             ),
@@ -526,22 +561,86 @@ class ReasoningEffortEnum(str, Enum):
     xhigh = "xhigh"
 
 
-class OptionsForReasoning(SharedOptions):
-    json_object: Optional[bool] = Field(
-        description="Output a valid JSON object {...}. Prompt must mention JSON.",
-        default=None,
+class VerbosityEnum(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class ImageDetailEnum(str, Enum):
+    low = "low"
+    high = "high"
+    auto = "auto"
+
+
+class ImageDetailWithOriginalEnum(str, Enum):
+    low = "low"
+    high = "high"
+    original = "original"
+    auto = "auto"
+
+
+def enum_values_sentence(enum_class):
+    values = [item.value for item in enum_class]
+    if len(values) == 1:
+        return values[0]
+    return "{}, and {}".format(", ".join(values[:-1]), values[-1])
+
+
+def build_options_class(
+    *, reasoning=False, verbosity=False, image_detail_original=False
+):
+    fields = {
+        "json_object": (
+            Optional[bool],
+            Field(
+                description="Output a valid JSON object {...}. Prompt must mention JSON.",
+                default=None,
+            ),
+        )
+    }
+    image_detail_enum = (
+        ImageDetailWithOriginalEnum if image_detail_original else ImageDetailEnum
     )
-    reasoning_effort: Optional[ReasoningEffortEnum] = Field(
-        description=(
-            "Constraints effort on reasoning for reasoning models. Currently supported "
-            "values are low, medium, and high. Reducing reasoning effort can result in "
-            "faster responses and fewer tokens used on reasoning in a response."
+    image_detail_values = enum_values_sentence(image_detail_enum)
+    fields["image_detail"] = (
+        Optional[image_detail_enum],
+        Field(
+            description=(
+                "Controls the detail level for image attachments. Supported values are "
+                f"{image_detail_values}."
+            ),
+            default=None,
         ),
-        default=None,
     )
+    if reasoning:
+        fields["reasoning_effort"] = (
+            Optional[ReasoningEffortEnum],
+            Field(
+                description=(
+                    "Constraints effort on reasoning for reasoning models. Currently "
+                    "supported values are low, medium, and high. Reducing reasoning "
+                    "effort can result in faster responses and fewer tokens used on "
+                    "reasoning in a response."
+                ),
+                default=None,
+            ),
+        )
+    if verbosity:
+        fields["verbosity"] = (
+            Optional[VerbosityEnum],
+            Field(
+                description=(
+                    "Controls how verbose the model's response should be. Supported "
+                    "values are low, medium, and high."
+                ),
+                default=None,
+            ),
+        )
+    return create_model("Options", __base__=SharedOptions, **fields)
 
 
-def _attachment(attachment):
+def _attachment(attachment, image_detail=None):
     url = attachment.url
     base64_content = ""
     if not url or attachment.resolve_type().startswith("audio/"):
@@ -558,7 +657,10 @@ def _attachment(attachment):
             },
         }
     if attachment.resolve_type().startswith("image/"):
-        return {"type": "image_url", "image_url": {"url": url}}
+        image_url = {"url": url}
+        if image_detail:
+            image_url["detail"] = image_detail
+        return {"type": "image_url", "image_url": image_url}
     else:
         format_ = "wav" if attachment.resolve_type() == "audio/wav" else "mp3"
         return {
@@ -585,6 +687,8 @@ class _Shared:
         vision=False,
         audio=False,
         reasoning=False,
+        verbosity=False,
+        image_detail_original=False,
         supports_schema=False,
         supports_tools=False,
         allows_system_prompt=True,
@@ -605,8 +709,12 @@ class _Shared:
 
         self.attachment_types = set()
 
-        if reasoning:
-            self.Options = OptionsForReasoning
+        if reasoning or verbosity or image_detail_original:
+            self.Options = build_options_class(
+                reasoning=reasoning,
+                verbosity=verbosity,
+                image_detail_original=image_detail_original,
+            )
 
         if vision:
             self.attachment_types.update(
@@ -630,8 +738,10 @@ class _Shared:
     def __str__(self) -> str:
         return "OpenAI Chat: {}".format(self.model_id)
 
-    def build_messages(self, prompt, conversation):
+    def build_messages(self, prompt, conversation, image_detail=None):
         messages = []
+        if image_detail is not None:
+            image_detail = image_detail.value
         current_system = None
         if conversation is not None:
             for prev_response in conversation.responses:
@@ -650,7 +760,9 @@ class _Shared:
                             {"type": "text", "text": prev_response.prompt.prompt}
                         )
                     for attachment in prev_response.attachments:
-                        attachment_message.append(_attachment(attachment))
+                        attachment_message.append(
+                            _attachment(attachment, image_detail=image_detail)
+                        )
                     messages.append({"role": "user", "content": attachment_message})
                 elif prev_response.prompt.prompt:
                     messages.append(
@@ -703,7 +815,9 @@ class _Shared:
             if prompt.prompt:
                 attachment_message.append({"type": "text", "text": prompt.prompt})
             for attachment in prompt.attachments:
-                attachment_message.append(_attachment(attachment))
+                attachment_message.append(
+                    _attachment(attachment, image_detail=image_detail)
+                )
             messages.append({"role": "user", "content": attachment_message})
         return messages
 
@@ -745,6 +859,7 @@ class _Shared:
     def build_kwargs(self, prompt, stream):
         kwargs = dict(not_nulls(prompt.options))
         json_object = kwargs.pop("json_object", None)
+        kwargs.pop("image_detail", None)
         if "max_tokens" not in kwargs and self.default_max_tokens is not None:
             kwargs["max_tokens"] = self.default_max_tokens
         if json_object:
@@ -776,11 +891,7 @@ class Chat(_Shared, KeyModel):
     key_env_var = "OPENAI_API_KEY"
     default_max_tokens = None
 
-    class Options(SharedOptions):
-        json_object: Optional[bool] = Field(
-            description="Output a valid JSON object {...}. Prompt must mention JSON.",
-            default=None,
-        )
+    Options = build_options_class()
 
     def execute(
         self,
@@ -792,7 +903,11 @@ class Chat(_Shared, KeyModel):
     ) -> Iterator[str]:
         if prompt.system and not self.allows_system_prompt:
             raise NotImplementedError("Model does not support system prompts")
-        messages = self.build_messages(prompt, conversation)
+        messages = self.build_messages(
+            prompt,
+            conversation,
+            image_detail=getattr(prompt.options, "image_detail", None),
+        )
         kwargs = self.build_kwargs(prompt, stream)
         client = self.get_client(key)
         usage = None
@@ -866,11 +981,7 @@ class AsyncChat(_Shared, AsyncKeyModel):
     key_env_var = "OPENAI_API_KEY"
     default_max_tokens = None
 
-    class Options(SharedOptions):
-        json_object: Optional[bool] = Field(
-            description="Output a valid JSON object {...}. Prompt must mention JSON.",
-            default=None,
-        )
+    Options = build_options_class()
 
     async def execute(
         self,
@@ -882,7 +993,11 @@ class AsyncChat(_Shared, AsyncKeyModel):
     ) -> AsyncGenerator[str, None]:
         if prompt.system and not self.allows_system_prompt:
             raise NotImplementedError("Model does not support system prompts")
-        messages = self.build_messages(prompt, conversation)
+        messages = self.build_messages(
+            prompt,
+            conversation,
+            image_detail=getattr(prompt.options, "image_detail", None),
+        )
         kwargs = self.build_kwargs(prompt, stream)
         client = self.get_client(key, async_=True)
         usage = None
